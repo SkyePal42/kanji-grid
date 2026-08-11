@@ -136,6 +136,7 @@
 
     /* Mark All Group */
     .mark-all-group { display: flex; align-items: center; gap: 6px; background: #0f172a; padding: 3px 8px; border-radius: 6px; border: 1px solid var(--border-color); }
+    body:not(.marking-mode) .mark-all-group { display: none; }
     .mark-all-label { font-size: 0.75rem; color: var(--text-muted); font-weight: 600; text-transform: uppercase; }
     .mark-dot { width: 18px; height: 18px; border-radius: 50%; border: 1px solid rgba(255,255,255,0.2); cursor: pointer; transition: transform 0.15s ease; padding: 0; }
     .mark-dot:hover { transform: scale(1.2); }
@@ -168,10 +169,12 @@
 
     body.marking-mode .kanji-card { cursor: crosshair; }
 
-    /* Uncategorized */
+    /* Uncategorized Details & Indicator */
     details.uncategorized-details { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 8px; padding: 10px 14px; margin-top: 20px; scroll-margin-top: 90px; }
-    details.uncategorized-details summary { cursor: pointer; list-style: none; }
+    details.uncategorized-details summary { cursor: pointer; list-style: none; display: flex; align-items: center; justify-content: space-between; }
     details.uncategorized-details summary::-webkit-details-marker { display: none; }
+    details.uncategorized-details summary::after { content: "►"; font-size: 0.8rem; color: var(--text-muted); transition: transform 0.2s ease; margin-left: auto; }
+    details.uncategorized-details[open] summary::after { transform: rotate(90deg); }
     details.uncategorized-details .kanji-grid { margin-top: 12px; }
 
     /* Modal Overlay */
@@ -216,6 +219,7 @@
 
     .tag-container { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
     .tag { background: var(--card-hover); color: var(--text-main); padding: 2px 8px; border-radius: 4px; font-size: 0.8rem; font-weight: 500; }
+    .tag.active-group-tag { background: var(--accent-active-tag); color: #0f172a; font-weight: 700; }
 
     .modal-mark-box { display: flex; align-items: center; gap: 8px; margin-top: 8px; padding: 4px 8px; background: #0f172a; border: 1px solid var(--border-color); border-radius: 6px; width: fit-content; }
 
@@ -278,6 +282,12 @@
     
     .sentence-english { font-size: 0.9rem; color: transparent; background-color: #334155; border-radius: 4px; padding: 2px 6px; user-select: none; transition: color 0.2s ease, background-color 0.2s ease; display: inline-block; cursor: default; }
     .sentence-english:hover { color: var(--text-muted); background-color: transparent; padding: 0; }
+
+    /* Dialog Modals */
+    .dialog-buttons { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
+    .btn-danger { background: var(--color-red-bg); color: var(--color-red); border-color: var(--color-red); }
+    .btn-danger:hover { background: var(--color-red); color: white; }
+    .btn-secondary { background: var(--card-hover); border-color: var(--border-color); }
   </style>
 </head>
 <body>
@@ -319,6 +329,7 @@
         <span class="stat-badge stat-green" id="count-green">Green: 0</span>
       </div>
 
+      <button id="reset-marks-btn" class="btn btn-danger">Reset Markings</button>
       <button id="export-btn" class="btn">Export Marks</button>
       <button id="import-btn" class="btn">Import Marks</button>
       <input type="file" id="import-file" accept=".json" style="display: none;">
@@ -409,6 +420,31 @@
     </div>
   </div>
 
+  <!-- Reset Confirmation Modal -->
+  <div class="modal-overlay" id="reset-confirm-modal">
+    <div class="modal-content" style="max-width: 450px;">
+      <h3>Confirm Marking Reset</h3>
+      <p style="margin-top: 10px; color: var(--text-muted);">Are you sure you want to clear all marked kanji? This action cannot be undone.</p>
+      <div class="dialog-buttons">
+        <button class="btn btn-secondary" id="reset-cancel-btn">Cancel</button>
+        <button class="btn btn-danger" id="reset-confirm-btn">Reset All</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Mark All Overwrite Confirmation Modal -->
+  <div class="modal-overlay" id="overwrite-confirm-modal">
+    <div class="modal-content" style="max-width: 500px;">
+      <h3>Overwrite Existing Markings?</h3>
+      <p style="margin-top: 10px; color: var(--text-muted);">This section already contains marked items. Choose how you want to handle existing marks:</p>
+      <div class="dialog-buttons">
+        <button class="btn btn-secondary" id="overwrite-cancel-btn">Cancel</button>
+        <button class="btn" id="overwrite-skip-btn">Skip Marked Items</button>
+        <button class="btn btn-danger" id="overwrite-confirm-btn">Overwrite All</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     let kanjiData = [];
     let isMarkingMode = false;
@@ -418,6 +454,7 @@
     let markState = JSON.parse(localStorage.getItem('kanji_color_state') || '{}');
     let currentModalKanji = null;
     let activeVocabSource = 'all';
+    let pendingMarkAction = null;
 
     const gridContainer = document.getElementById('grid-container');
     const sidebarLinks = document.getElementById('sidebar-links');
@@ -431,6 +468,9 @@
 
     const sentenceModalOverlay = document.getElementById('sentence-modal-overlay');
     const sentenceModalClose = document.getElementById('sentence-modal-close');
+
+    const resetConfirmModal = document.getElementById('reset-confirm-modal');
+    const overwriteConfirmModal = document.getElementById('overwrite-confirm-modal');
 
     // Controls Logic
     markingToggle.addEventListener('click', () => {
@@ -447,7 +487,12 @@
       document.body.classList.toggle('compact-mode', isCompactMode);
     });
 
-    filterSelect.addEventListener('change', renderGrid);
+    filterSelect.addEventListener('change', () => {
+      renderGrid();
+      if (modalOverlay.classList.contains('active') && currentModalKanji) {
+        updateModalContent(currentModalKanji);
+      }
+    });
     searchInput.addEventListener('input', renderGrid);
 
     // Export / Import Marks
@@ -463,7 +508,10 @@
 
     const importBtn = document.getElementById('import-btn');
     const importFileInput = document.getElementById('import-file');
-    importBtn.addEventListener('click', () => importFileInput.click());
+    importBtn.addEventListener('click', () => {
+      importFileInput.value = '';
+      importFileInput.click();
+    });
     importFileInput.addEventListener('change', (e) => {
       const file = e.target.files[0];
       if (!file) return;
@@ -475,6 +523,9 @@
             markState = imported;
             localStorage.setItem('kanji_color_state', JSON.stringify(markState));
             renderGrid();
+            if (modalOverlay.classList.contains('active') && currentModalKanji) {
+              updateModalContent(currentModalKanji);
+            }
             alert('Marks imported successfully!');
           }
         } catch (err) {
@@ -482,6 +533,23 @@
         }
       };
       reader.readAsText(file);
+    });
+
+    // Reset Markings Logic
+    document.getElementById('reset-marks-btn').addEventListener('click', () => {
+      resetConfirmModal.classList.add('active');
+    });
+    document.getElementById('reset-cancel-btn').addEventListener('click', () => {
+      resetConfirmModal.classList.remove('active');
+    });
+    document.getElementById('reset-confirm-btn').addEventListener('click', () => {
+      markState = {};
+      localStorage.setItem('kanji_color_state', JSON.stringify(markState));
+      resetConfirmModal.classList.remove('active');
+      renderGrid();
+      if (modalOverlay.classList.contains('active') && currentModalKanji) {
+        updateModalContent(currentModalKanji);
+      }
     });
 
     async function loadData() {
@@ -566,11 +634,10 @@
         if (a === 'Uncategorized') return 1;
         if (b === 'Uncategorized') return -1;
         
-        // Custom sorting for JLPT to ensure 5 to 1 order (N5, N4, N3, N2, N1)
         if (filter === 'jlpt') {
           const numA = parseInt(a.replace(/\D/g, ''), 10) || 0;
           const numB = parseInt(b.replace(/\D/g, ''), 10) || 0;
-          return numB - numA; // Descending order (5 down to 1)
+          return numB - numA;
         }
 
         return a.localeCompare(b, undefined, { numeric: true });
@@ -588,7 +655,10 @@
           link.title = `${key} (${groups[key].length})`;
           link.addEventListener('click', () => {
             const sec = document.getElementById(secId);
-            if (sec) sec.scrollIntoView({ behavior: 'smooth' });
+            if (sec) {
+              if (sec.tagName === 'DETAILS') sec.open = true;
+              sec.scrollIntoView({ behavior: 'smooth' });
+            }
           });
           li.appendChild(link);
           sidebarLinks.appendChild(li);
@@ -602,6 +672,20 @@
       }
 
       updateStats();
+    }
+
+    function applyBatchMarking(items, targetState, mode = 'overwrite') {
+      items.forEach(k => {
+        const hasExistingMark = markState[k.kanji] !== undefined;
+        if (mode === 'skip' && hasExistingMark) return;
+        if (targetState === 0) delete markState[k.kanji];
+        else markState[k.kanji] = targetState;
+      });
+      localStorage.setItem('kanji_color_state', JSON.stringify(markState));
+      renderGrid();
+      if (modalOverlay.classList.contains('active') && currentModalKanji) {
+        updateModalContent(currentModalKanji);
+      }
     }
 
     function renderSection(title, items, id) {
@@ -638,12 +722,14 @@
         markDots.forEach((dot, idx) => {
           dot.addEventListener('click', () => {
             const targetState = states[idx];
-            items.forEach(k => {
-              if (targetState === 0) delete markState[k.kanji];
-              else markState[k.kanji] = targetState;
-            });
-            localStorage.setItem('kanji_color_state', JSON.stringify(markState));
-            renderGrid();
+            const hasMarkedItems = items.some(k => markState[k.kanji] !== undefined && markState[k.kanji] !== 0);
+
+            if (hasMarkedItems && targetState !== 0) {
+              pendingMarkAction = { items, targetState };
+              overwriteConfirmModal.classList.add('active');
+            } else {
+              applyBatchMarking(items, targetState);
+            }
           });
         });
 
@@ -653,6 +739,27 @@
       sec.appendChild(createKanjiGrid(items));
       gridContainer.appendChild(sec);
     }
+
+    document.getElementById('overwrite-cancel-btn').addEventListener('click', () => {
+      pendingMarkAction = null;
+      overwriteConfirmModal.classList.remove('active');
+    });
+
+    document.getElementById('overwrite-skip-btn').addEventListener('click', () => {
+      if (pendingMarkAction) {
+        applyBatchMarking(pendingMarkAction.items, pendingMarkAction.targetState, 'skip');
+        pendingMarkAction = null;
+      }
+      overwriteConfirmModal.classList.remove('active');
+    });
+
+    document.getElementById('overwrite-confirm-btn').addEventListener('click', () => {
+      if (pendingMarkAction) {
+        applyBatchMarking(pendingMarkAction.items, pendingMarkAction.targetState, 'overwrite');
+        pendingMarkAction = null;
+      }
+      overwriteConfirmModal.classList.remove('active');
+    });
 
     function createKanjiGrid(items) {
       const grid = document.createElement('div');
@@ -692,7 +799,7 @@
       document.getElementById('count-green').textContent = `Green: ${counts[3]}`;
     }
 
-    function openModal(k) {
+    function updateModalContent(k) {
       currentModalKanji = k;
       document.getElementById('m-kanji').textContent = k.kanji || '-';
       document.getElementById('m-meaning').textContent = k.meaning || 'No meaning';
@@ -700,22 +807,28 @@
       document.getElementById('m-kunyomi').textContent = k.kunyomi || '-';
       document.getElementById('m-jouyou-readings').textContent = k.jouyou_readings || '-';
 
+      const currentFilter = filterSelect.value;
       const tagsBox = document.getElementById('m-tags');
       tagsBox.innerHTML = '';
-      const tags = [];
+      
       const gradeVal = k.jouyou_grade !== undefined && k.jouyou_grade !== null && k.jouyou_grade !== '' ? k.jouyou_grade : k.grade;
       const jlptVal = k.jlpt_level !== undefined && k.jlpt_level !== null && k.jlpt_level !== '' ? k.jlpt_level : k.jlpt;
 
-      if (gradeVal) tags.push(`Grade ${gradeVal}`);
-      if (jlptVal) tags.push(`JLPT N${jlptVal}`);
-      if (k.wk_level || k.wk) tags.push(`WK Lvl ${k.wk_level || k.wk}`);
-      if (k.genki_chapter || k.genki) tags.push(`Genki Ch ${k.genki_chapter || k.genki}`);
-      if (k.tobira_chapter || k.tobira) tags.push(`Tobira Ch ${k.tobira_chapter || k.tobira}`);
-      tags.forEach(t => {
-        const span = document.createElement('span');
-        span.className = 'tag';
-        span.textContent = t;
-        tagsBox.appendChild(span);
+      const tagDefinitions = [
+        { filterKey: 'jouyou', text: gradeVal ? `Grade ${gradeVal}` : null },
+        { filterKey: 'jlpt', text: jlptVal ? `JLPT N${jlptVal}` : null },
+        { filterKey: 'wk', text: (k.wk_level || k.wk) ? `WK Lvl ${k.wk_level || k.wk}` : null },
+        { filterKey: 'genki', text: (k.genki_chapter || k.genki) ? `Genki Ch ${k.genki_chapter || k.genki}` : null },
+        { filterKey: 'tobira', text: (k.tobira_chapter || k.tobira) ? `Tobira Ch ${k.tobira_chapter || k.tobira}` : null }
+      ];
+
+      tagDefinitions.forEach(t => {
+        if (t.text) {
+          const span = document.createElement('span');
+          span.className = `tag ${t.filterKey === currentFilter ? 'active-group-tag' : ''}`;
+          span.textContent = t.text;
+          tagsBox.appendChild(span);
+        }
       });
 
       const dotsBox = document.getElementById('m-mark-dots');
@@ -732,7 +845,7 @@
           const card = document.querySelector(`.kanji-card[data-kanji="${k.kanji}"]`);
           if (card) card.setAttribute('data-state', st);
           updateStats();
-          openModal(k);
+          updateModalContent(k);
         });
         dotsBox.appendChild(dot);
       });
@@ -762,6 +875,10 @@
       }
 
       renderModalVocab();
+    }
+
+    function openModal(k) {
+      updateModalContent(k);
       modalOverlay.classList.add('active');
     }
 
@@ -779,7 +896,6 @@
 
       let sentencesFound = 0;
 
-      // Check WaniKani sentences
       if (v.sentences_wk && v.sentences_wk.length > 0) {
         v.sentences_wk.forEach(s => {
           if (s.sentence) {
@@ -795,7 +911,6 @@
         });
       }
 
-      // Check Kaishi sentences
       if (v.sentences_kaishi && v.sentences_kaishi.length > 0) {
         v.sentences_kaishi.forEach(s => {
           if (s.sentence_html || s.sentence) {
